@@ -2,7 +2,8 @@
 
 [![MIT License](https://badgen.now.sh/badge/License/MIT/blue)](http://github.com/sbstjn/appsync-example-dynamodb/blob/master/LICENSE.md)
 
-> Deploy a GraphQL API using AWS AppSync, Serverless Application Model, and DynamoDB. Based on [appsync-example-lambda](https://github.com/superluminar-io/appsync-example-lambda/) and [appsync-resolvers](https://sbstjn.com/serverless-graphql-with-appsync-and-lambda.html).
+> Deploy a GraphQL API using AWS AppSync, Serverless Application Model, and DynamoDB. \
+> Based on [appsync-example-lambda](https://github.com/superluminar-io/appsync-example-lambda/) and [appsync-resolvers](https://sbstjn.com/serverless-graphql-with-appsync-and-lambda.html).
 
 ## Schema
 
