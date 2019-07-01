@@ -1,0 +1,23 @@
+type Person {
+	id: ID!
+	name: String!
+	age: Int!
+	birthday: String!
+
+	friends: [Person!]!
+}
+
+type Query {
+	people: [Person!]!
+	person(id: ID!): Person
+}
+
+type Mutation {
+	personCreate(name: String!, birthday: String!): Person!
+	personFriendsAdd(person: ID, friend: ID!): Person!
+}
+
+schema {
+	query: Query
+	mutation: Mutation
+}

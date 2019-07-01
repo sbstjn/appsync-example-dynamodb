@@ -1,0 +1,250 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+
+Globals:
+  Function:
+    Handler: handler
+    Runtime: go1.x
+    Tracing: Active
+
+Resources:
+  TablePeople:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      TableName: people
+      PrimaryKey:
+        Name: id
+        Type: String
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+  RoleAppSyncDynamoDB:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${APIName}-dynamodb-policy
+      ManagedPolicyArns:
+        - !Ref PolicyDynamoDB
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Principal:
+              Service:
+                - appsync.amazonaws.com
+
+  PolicyDynamoDB:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Path: /appsync/
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:*
+            Resource:
+              - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TablePeople}
+
+  FunctionPersonAge:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${APIName}-person-age
+      CodeUri: ./dist/person-age
+
+  Role: 
+    Type: AWS::IAM::Role
+    Properties: 
+      AssumeRolePolicyDocument: 
+        Version: 2012-10-17
+        Statement: 
+          - Effect: Allow
+            Principal:
+              Service: appsync.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies: 
+        - PolicyName: allow-access-to-lambda-from-appsync
+          PolicyDocument: 
+            Version: 2012-10-17
+            Statement: 
+              - Effect: Allow
+                Action: lambda:invokeFunction
+                Resource:
+                  - !Sub ${FunctionPersonAge.Arn}
+
+  AppSyncAPI:
+    Type: AWS::AppSync::GraphQLApi
+    Properties:
+      Name: !Ref APIName
+      AuthenticationType: API_KEY
+
+  AppSyncSchema:
+    Type: AWS::AppSync::GraphQLSchema
+    Properties:
+      ApiId: !GetAtt AppSyncAPI.ApiId
+      DefinitionS3Location: schema.graphql
+
+  AppSyncDataSourceDynamoDB:
+    Type: AWS::AppSync::DataSource
+    Properties:
+      ApiId: !GetAtt AppSyncAPI.ApiId
+      Name: dynamodb
+      Type: AMAZON_DYNAMODB
+      ServiceRoleArn: !GetAtt RoleAppSyncDynamoDB.Arn
+      DynamoDBConfig:
+        TableName: !Ref TablePeople
+        AwsRegion: !Sub ${AWS::Region}
+
+  AppSyncDataSourcePersonAge:
+    Type: AWS::AppSync::DataSource
+    Properties:
+      ApiId: !GetAtt AppSyncAPI.ApiId
+      Name: sourcePersonAge
+      Type: AWS_LAMBDA
+      LambdaConfig:
+        LambdaFunctionArn: !GetAtt FunctionPersonAge.Arn
+      ServiceRoleArn: !GetAtt Role.Arn
+
+  AppSyncResolverPerson:
+    Type: AWS::AppSync::Resolver
+    DependsOn: AppSyncSchema
+    Properties:
+      ApiId: !GetAtt AppSyncAPI.ApiId
+      TypeName: Query
+      FieldName: person
+      DataSourceName: !GetAtt AppSyncDataSourceDynamoDB.Name
+      RequestMappingTemplate: >
+        {
+          "version": "2017-02-28",
+          "operation": "GetItem",
+          "key": {
+            "id": { "S": "${context.arguments.id}" }
+          },
+          "consistentRead": true
+        }
+      ResponseMappingTemplate: $util.toJson($context.result)
+
+  AppSyncResolverPersonFriends:
+    Type: AWS::AppSync::Resolver
+    DependsOn: AppSyncSchema
+    Properties:
+      ApiId: !GetAtt AppSyncAPI.ApiId
+      TypeName: Person
+      FieldName: friends
+      DataSourceName: !GetAtt AppSyncDataSourceDynamoDB.Name
+      RequestMappingTemplate: >
+        #if(!$context.source.friends)
+          #return([])
+        #end
+
+        #set($ids = [])
+        #foreach($id in ${context.source.friends})
+          #set($map = {})
+          $util.qr($map.put("id", $util.dynamodb.toString($id)))
+          $util.qr($ids.add($map))
+        #end
+
+        {
+          "version": "2018-05-29",
+          "operation": "BatchGetItem",
+          "tables": {
+            "people": {
+              "keys": $util.toJson($ids),
+              "consistentRead": true
+            }
+          }
+        }
+      ResponseMappingTemplate: $util.toJson($context.result.data.people)
+
+  AppSyncResolverPeople:
+    Type: AWS::AppSync::Resolver
+    DependsOn: AppSyncSchema
+    Properties:
+      ApiId: !GetAtt AppSyncAPI.ApiId
+      TypeName: Query
+      FieldName: people
+      DataSourceName: !GetAtt AppSyncDataSourceDynamoDB.Name
+      RequestMappingTemplate: >
+        {
+          "version": "2017-02-28",
+          "operation": "Scan"
+        }
+      ResponseMappingTemplate: $util.toJson($context.result.items)
+
+
+  AppSyncResolverMutationPersonCreate:
+    Type: AWS::AppSync::Resolver
+    DependsOn: AppSyncSchema
+    Properties:
+      ApiId: !GetAtt AppSyncAPI.ApiId
+      TypeName: Mutation
+      FieldName: personCreate
+      DataSourceName: !GetAtt AppSyncDataSourceDynamoDB.Name
+      RequestMappingTemplate: >
+        {
+          "version": "2017-02-28",
+          "operation": "PutItem",
+          "key": {
+            "id": $util.dynamodb.toDynamoDBJson($util.autoId())
+          },
+          "attributeValues" : $util.dynamodb.toMapValuesJson($context.arguments)
+        }
+      ResponseMappingTemplate: $util.toJson($context.result)
+
+  AppSyncResolverMutationPersonFriendsAdd:
+    Type: AWS::AppSync::Resolver
+    DependsOn: AppSyncSchema
+    Properties:
+      ApiId: !GetAtt AppSyncAPI.ApiId
+      TypeName: Mutation
+      FieldName: personFriendsAdd
+      DataSourceName: !GetAtt AppSyncDataSourceDynamoDB.Name
+      RequestMappingTemplate: >
+        {
+          "version": "2017-02-28",
+          "operation": "UpdateItem",
+          "key": {
+            "id": $util.dynamodb.toDynamoDBJson($context.arguments.person)
+          },
+          "update" : {
+            "expression" : "ADD friends :friend",
+            "expressionValues" : {
+              ":friend" : { "SS": [ $util.toJson($context.arguments.friend) ] }
+            }
+          }
+        }
+      ResponseMappingTemplate: $util.toJson($context.result)
+
+  AppSyncResolverPersonAge:
+    Type: AWS::AppSync::Resolver
+    Properties:
+      ApiId: !GetAtt AppSyncAPI.ApiId
+      TypeName: Person
+      FieldName: age
+      DataSourceName: !GetAtt AppSyncDataSourcePersonAge.Name
+      RequestMappingTemplate: '{ "version" : "2017-02-28", "operation": "Invoke", "payload": $utils.toJson($ctx.source) }'
+      ResponseMappingTemplate: $util.toJson($ctx.result)
+
+  AppSyncAPIKey:
+      Type: AWS::AppSync::ApiKey
+      Properties:
+        ApiId: !GetAtt AppSyncAPI.ApiId
+        Expires: !Ref APIKeyExpiration
+
+Parameters:
+  APIName:
+    Type: String
+  APIKeyExpiration:
+    Type: Number
+
+Outputs:
+  APIKey:
+    Description: API Key
+    Value: !GetAtt AppSyncAPIKey.ApiKey
+
+  GraphQL:
+    Description: GraphQL URL
+    Value: !GetAtt AppSyncAPI.GraphQLUrl
